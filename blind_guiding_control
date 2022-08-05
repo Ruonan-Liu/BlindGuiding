@@ -1,0 +1,1065 @@
+# -----------1.导入所需的库--------------------------
+import RPi.GPIO as GPIO  # 导入RPi模块
+import time  # 使用延时功能
+import numpy as np
+import cv2
+import os
+import mediapipe as mp  # 导入Google开源mediapipe库
+import threading
+
+
+# -----------2.定义舵机控制所需的函数--------------------------
+# 将角度angle转换为占空因数duty_cycle
+def angle_to_dutycycle(angle):
+    # 公式：占空因数 = 2.5 + 角度 * 10 / 180
+    fm = 10.0 / 180.0
+    dutycycle = angle * fm + 2.5
+    dutycycle = int(dutycycle * 10) / 10.0  # 将占空因数转化为整数
+    return dutycycle
+
+
+# 初始化两个舵机
+def set_cloud_platform_degree_1(init_btm_degree, init_top_degree):
+    # 初始化两个舵机角度
+    # 初始化底部舵机p1角度为last_btm_degree
+    p11.start(angle_to_dutycycle(init_btm_degree))
+    # 初始化顶部舵机p2角度为last_top_degree
+    p12.start(angle_to_dutycycle(init_top_degree))
+    time.sleep(0.01)
+    # 清除当前占空比，使舵机停止抖动
+    p11.ChangeDutyCycle(0)  # 初始化底部舵机p1占空比为0
+    p12.ChangeDutyCycle(0)  # 初始化顶部舵机p2占空比为0
+    time.sleep(0.01)
+
+
+# 初始化两个舵机
+def set_cloud_platform_degree_2(init_btm_degree, init_top_degree):
+    # 初始化两个舵机角度
+    # 初始化底部舵机p1角度为last_btm_degree
+    p21.start(angle_to_dutycycle(init_btm_degree))
+    # 初始化顶部舵机p2角度为last_top_degree
+    p22.start(angle_to_dutycycle(init_top_degree))
+    time.sleep(0.01)
+    # 清除当前占空比，使舵机停止抖动
+    p21.ChangeDutyCycle(0)  # 初始化底部舵机p1占空比为0
+    p22.ChangeDutyCycle(0)  # 初始化顶部舵机p2占空比为0
+    time.sleep(0.01)
+
+
+# 设置底部舵机的角度
+def set_btm_degree_1(degrees):
+    # 设置底部舵机角度
+    p11.start(angle_to_dutycycle(degrees))
+    time.sleep(0.01)
+    # 清除底部舵机占空比，使舵机停止抖动
+    p11.ChangeDutyCycle(0)
+    time.sleep(0.01)
+
+
+# 设置底部舵机的角度
+def set_btm_degree_2(degrees):
+    # 设置底部舵机角度
+    p21.start(angle_to_dutycycle(degrees))
+    time.sleep(0.01)
+    # 清除底部舵机占空比，使舵机停止抖动
+    p21.ChangeDutyCycle(0)
+    time.sleep(0.01)
+
+
+# 设置顶部舵机的角度
+def set_top_degree_1(degrees):
+    # 设置顶部舵机角度
+    p12.start(angle_to_dutycycle(degrees))
+    time.sleep(0.01)
+    # 清除顶部舵机占空比，使舵机停止抖动
+    p12.ChangeDutyCycle(0)
+    time.sleep(0.01)
+
+
+# 设置顶部舵机的角度
+def set_top_degree_2(degrees):
+    # 设置顶部舵机角度
+    p22.start(angle_to_dutycycle(degrees))
+    time.sleep(0.01)
+    # 清除顶部舵机占空比，使舵机停止抖动
+    p22.ChangeDutyCycle(0)
+    time.sleep(0.01)
+
+
+# 底部舵机的比例控制
+def btm_servo_control(offset_x):
+    # 设置偏移量死区大小，防止画面抖动
+    global offset_dead_block
+    # 底部舵机的偏移速度系数
+    global btm_kp
+    # 上一次底部舵机的角度
+    global last_btm_degree
+
+    # 设置最小阈值
+    if abs(offset_x) < offset_dead_block:  # 如果偏移量小于阈值
+        offset_x = 0  # 设置偏移量为0，不响应，防止画面抖动
+
+    # 设置偏移量范围在-50到50之间
+    delta_degree = offset_x * btm_kp  # 角度与偏移量成正比例关系，比例系数为偏移速度系数
+
+    # 计算得到新的底部舵机角度
+    next_btm_degree = last_btm_degree + delta_degree  # 新的底部舵机的角度 = 旧的底部舵机的角度 + 角度的增量
+
+    # 舵机边界检测与控制
+    if next_btm_degree < 0:  # 当底部舵机角度到达0°时
+        next_btm_degree = 0  # 底部舵机不再旋转
+    elif next_btm_degree > 180:  # 当底部舵机角度到达180°时
+        next_btm_degree = 180  # 底部舵机不再旋转
+
+    return int(next_btm_degree)  # 返回底部舵机的下一角度
+
+
+# 顶部舵机的比例控制
+def top_servo_control(offset_y):
+    # 偏移量死区大小
+    global offset_dead_block
+    # 顶部舵机的偏移速度系数
+    global top_kp
+    # 上一次顶部舵机的角度
+    global last_top_degree
+
+    # 设置最小阈值
+    if abs(offset_y) < offset_dead_block:  # 如果偏移量小于阈值
+        offset_y = 0  # 设置偏移量为0，不响应，防止画面抖动
+
+    # 设置偏移量范围在-50到50之间
+    delta_degree = offset_y * top_kp  # 角度与偏移量成正比例关系，比例系数为偏移速度系数
+
+    # 计算得到新的顶部舵机角度
+    next_top_degree = last_top_degree + delta_degree  # 新的顶部舵机的角度 = 旧的顶部舵机的角度 + 角度的增量
+
+    # 舵机边界检测与控制
+    if next_top_degree < 0:  # 当顶部舵机角度到达0°时
+        next_top_degree = 0  # 顶部舵机不再旋转
+    elif next_top_degree > 180:  # 当顶部舵机角度到达180°时
+        next_top_degree = 180  # 顶部舵机不再旋转
+
+    return int(next_top_degree)  # 返回顶部舵机的下一角度
+
+
+# 设置底部舵机的角度
+def set_btm_servo_angle_1(degree):
+    btm_min_angle = 0  # 底部舵机最小旋转角度
+    btm_max_angle = 180  # 底部舵机最大旋转角度
+
+    if degree < btm_min_angle:  # 当底部舵机角度到达最小旋转角度时
+        degree = btm_min_angle  # 底部舵机不再旋转
+    elif degree > btm_max_angle:  # 当底部舵机角度到达最大旋转角度时
+        degree = btm_max_angle  # 底部舵机不再旋转
+
+    set_btm_degree_1(degrees=degree)  # 设置底部舵机的角度
+
+
+# 设置底部舵机的角度
+def set_btm_servo_angle_2(degree):
+    btm_min_angle = 0  # 底部舵机最小旋转角度
+    btm_max_angle = 180  # 底部舵机最大旋转角度
+
+    if degree < btm_min_angle:  # 当底部舵机角度到达最小旋转角度时
+        degree = btm_min_angle  # 底部舵机不再旋转
+    elif degree > btm_max_angle:  # 当底部舵机角度到达最大旋转角度时
+        degree = btm_max_angle  # 底部舵机不再旋转
+
+    set_btm_degree_2(degrees=degree)  # 设置底部舵机的角度
+
+
+# 设置顶部舵机的角度
+def set_top_servo_angle_1(degree):
+    top_min_angle = 0  # 底部舵机最小旋转角度
+    top_max_angle = 180  # 底部舵机最大旋转角度
+
+    if degree < top_min_angle:  # 当顶部舵机角度到达最小旋转角度时
+        degree = top_min_angle  # 顶部舵机不再旋转
+    elif degree > top_max_angle:  # 当顶部舵机角度到达最大旋转角度时
+        degree = top_max_angle  # 顶部舵机不再旋转
+
+    set_top_degree_1(degrees=degree)  # 设置顶部舵机的角度
+
+
+# 设置顶部舵机的角度
+def set_top_servo_angle_2(degree):
+    top_min_angle = 0  # 底部舵机最小旋转角度
+    top_max_angle = 180  # 底部舵机最大旋转角度
+
+    if degree < top_min_angle:  # 当顶部舵机角度到达最小旋转角度时
+        degree = top_min_angle  # 顶部舵机不再旋转
+    elif degree > top_max_angle:  # 当顶部舵机角度到达最大旋转角度时
+        degree = top_max_angle  # 顶部舵机不再旋转
+
+    set_top_degree_2(degrees=degree)  # 设置顶部舵机的角度
+
+
+# 向前
+def forward():
+    # 设置为向上30°
+    set_btm_servo_angle_1(90)
+    set_top_servo_angle_1(120)
+    print("forward")
+
+
+# 向左
+def left():
+    # 设置为向左30°
+    set_btm_servo_angle_1(60)
+    set_top_servo_angle_1(90)
+    print("left")
+
+
+# 向右
+def right():
+    # 设置为向右30°
+    set_btm_servo_angle_1(120)
+    set_top_servo_angle_1(90)
+    print("right")
+
+
+# 向左转
+def turn_left():
+    # 设置为向左90°
+    set_btm_servo_angle_1(0)
+    set_top_servo_angle_1(90)
+    print("turn left")
+
+
+# 向右转
+def turn_right():
+    # 设置为向右90°
+    set_btm_servo_angle_1(180)
+    set_top_servo_angle_1(90)
+    print("turn right")
+
+
+# 回调函数
+def call_back(*arg):
+    pass
+
+
+# -----------3.定义巡线所需的函数--------------------------
+# 初始化滑动条
+def TrackBar_Init():
+    # 1 create windows
+    cv2.namedWindow('h_binary')
+    cv2.namedWindow('s_binary')
+    cv2.namedWindow('l_binary')
+
+    # 2 Create Trackbar
+    cv2.createTrackbar('hmin', 'h_binary', 0, 255, call_back)
+    cv2.createTrackbar('hmax', 'h_binary', 135, 255, call_back)
+    cv2.createTrackbar('smin', 's_binary', 0, 255, call_back)
+    cv2.createTrackbar('smax', 's_binary', 14, 255, call_back)  # 51
+    cv2.createTrackbar('lmin', 'l_binary', 0, 255, call_back)
+    cv2.createTrackbar('lmax', 'l_binary', 168, 255, call_back)
+
+
+# 在HSV色彩空间下得到二值图
+def Get_HSV(frame):
+    # 获取滑动条值
+    hmin = cv2.getTrackbarPos('hmin', 'h_binary')
+    hmax = cv2.getTrackbarPos('hmax', 'h_binary')
+    smin = cv2.getTrackbarPos('smin', 's_binary')
+    smax = cv2.getTrackbarPos('smax', 's_binary')
+    lmin = cv2.getTrackbarPos('lmin', 'l_binary')
+    lmax = cv2.getTrackbarPos('lmax', 'l_binary')
+    # 转换为HSV图像
+    hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
+    h, l, s = cv2.split(hls)
+
+    # 设置阈值，转换为二值图像
+    h_binary = cv2.inRange(np.array(h), np.array(hmin), np.array(hmax))
+    s_binary = cv2.inRange(np.array(s), np.array(smin), np.array(smax))
+    l_binary = cv2.inRange(np.array(l), np.array(lmin), np.array(lmax))
+
+    # 对H、S、V三个通道分别与操作获得二值图像
+    binary = 255 - cv2.bitwise_and(h_binary,
+                                   cv2.bitwise_and(s_binary, l_binary))
+    cv2.imshow('binary', binary)
+
+    return binary
+
+
+# 图像处理
+def Image_Processing():
+    global frame, binary
+
+    ret, frame = usb_cap1.read()
+    frame = cv2.flip(frame, 1)  # 画面左右翻转
+
+    if ret:
+        binary = Get_HSV(frame)
+
+        # 高斯滤波
+        blur = cv2.GaussianBlur(binary, (5, 5), 0)
+
+        # 消除小物体
+        kernel = np.ones((5, 5), np.uint8)
+        eliminate = cv2.morphologyEx(
+            blur, cv2.MORPH_OPEN, kernel, iterations=5)
+
+        # 中值滤波
+        filter = cv2.medianBlur(eliminate, 5)
+
+        # 开运算
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        Open = cv2.morphologyEx(filter, cv2.MORPH_OPEN, kernel)
+
+        # 闭运算
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        Erode = cv2.morphologyEx(Open, cv2.MORPH_ERODE, kernel)
+
+        # 腐蚀操作
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        Dilate = cv2.morphologyEx(Erode, cv2.MORPH_DILATE, kernel)
+
+        binary = Dilate  # Dilate
+
+
+# 找线
+def Find_Line():
+    global x, y, image, flag
+    flag = 0
+    # 找出所有轮廓
+    contours, hierarchy = cv2.findContours(binary, 1, cv2.CHAIN_APPROX_NONE)
+
+    # 找出最大轮廓
+    if len(contours) > 0:
+        for i in range(len(contours)):
+            if (cv2.contourArea(contours[i]) > 0.8 * width * height):
+                continue
+            else:
+                max = contours[i]
+
+        for j in range(len(contours)):
+            if (cv2.contourArea(contours[j]) > 0.8 * width * height):
+                continue
+            if (cv2.contourArea(contours[j]) > cv2.contourArea(max)):
+                max = contours[j]
+                flag = 1
+
+        if flag == 1:
+            M = cv2.moments(max)
+
+            # 中心点坐标
+            x = int(M['m10'] / M['m00'])
+            y = int(M['m01'] / M['m00'])
+
+            # 显示
+            image = frame.copy()
+            # 标出中心位置
+            cv2.line(image, (x, 0), (x, height), (0, 0, 255), 1)
+            cv2.line(image, (0, y), (width, y), (0, 0, 255), 1)
+            # 画出轮廓
+            cv2.drawContours(image, max, -1, (128, 0, 128), 2)
+
+            image = cv2.resize(image, (0, 0), fx=0.5, fy=0.5,
+                               interpolation=cv2.INTER_NEAREST)
+            cv2.imshow("image", image)
+            cv2.waitKey(1)
+
+    else:
+        image = frame.copy()
+        cv2.imshow("line_patrol", image)
+        cv2.waitKey(1)
+        print("not found the line")
+        (x, y) = (0, 0)
+
+
+# 巡线
+def Follow_Line():
+    global x, y, turn_flag
+
+    if (0 < x < width / 4):
+        if turn_flag != 1:
+            left()
+            left()
+            left()
+            left()
+            left()
+        turn_flag = 1
+    elif (3 * width / 4 < x < width):
+        if turn_flag != 2:
+            right()
+            right()
+            right()
+            right()
+            right()
+        turn_flag = 2
+
+    # 直角拐弯
+    elif (y > 3 * height / 4):
+        if (x < width / 2):
+            if turn_flag != 3:
+                turn_left()
+                turn_left()
+                turn_left()
+                turn_left()
+                turn_left()
+            turn_flag = 3
+        elif (x >= width / 2):
+            if turn_flag != 4:
+                turn_right()
+                turn_right()
+                turn_right()
+                turn_right()
+                turn_right()
+            turn_flag = 4
+    elif (x >= width / 4 and x <= 3 * width / 4):
+        if turn_flag != 5:
+            forward()
+            forward()
+            forward()
+            forward()
+            forward()
+        turn_flag = 5
+
+
+# -----------4.定义手势识别与追踪所需的函数--------------------------
+# 计算手部中心点在画面中的偏移量（偏移量的取值范围：[-1, 1]）
+def calculate_offset(frame_width, frame_height, pid_x, pid_y):
+    offset_x = float(pid_x / frame_width - 0.5) * 2  # 手部中心点在画面中心x轴上的偏移量
+    offset_y = float(0.5 - pid_y / frame_height) * 2  # 手部中心点在画面中心y轴上的偏移量
+
+    return (offset_x, offset_y)  # 返回x，y轴上的偏移量
+
+
+# 手指弯曲检测
+def finger_stretch_detect(point1, point2, point3):
+    result = 0  # 将result初始化为0
+
+    # 求空间上两点的2-范数，即空间上两点的直线距离
+    dist1 = np.linalg.norm((point2 - point1), ord=2)  # 求手指底部到手掌之间向量的直线距离
+    dist2 = np.linalg.norm((point3 - point1), ord=2)  # 求手指尖部到手掌之间向量的直线距离
+    if dist2 > dist1:  # 如果手指尖部到手掌之间的距离大于手指尖部到手掌之间的距离
+        result = 1  # 表示手指伸直，将result置为1
+
+    return result
+
+
+# 检测手势
+def detect_hands_gesture(result):
+    global cmdline
+    if (result[0] == 1) and (result[1] == 0) and (result[2] == 0) and (result[3] == 0) and (result[4] == 0):  # 第1根手指伸直
+        gesture = "good"
+        print("good")
+        cmdline = 'espeak ' + "good"  # 控制音箱发出声音
+    elif (result[0] == 0) and (result[1] == 0) and (result[2] == 0) and (result[3] == 0) and (result[4] == 0):  # 无手指伸直
+        gesture = "stone"
+        print("stone")
+        cmdline = 'espeak ' + "stone"  # 控制音箱发出声音
+    elif (result[0] == 0) and (result[1] == 1) and (result[2] == 0) and (result[3] == 0) and (
+            result[4] == 0):  # 第2根手指伸直
+        gesture = "one"
+        print("one")
+        cmdline = 'espeak ' + "one"  # 控制音箱发出声音
+    elif (result[0] == 0) and (result[1] == 1) and (result[2] == 1) and (result[3] == 0) and (
+            result[4] == 0):  # 第2,3根手指伸直
+        gesture = "two"
+        print("two")
+        cmdline = 'espeak ' + "two"  # 控制音箱发出声音
+    elif (result[0] == 0) and (result[1] == 1) and (result[2] == 1) and (result[3] == 1) and (
+            result[4] == 0):  # 第2,3,4根手指伸直
+        gesture = "three"
+        print("three")
+        cmdline = 'espeak ' + "three"  # 控制音箱发出声音
+    elif (result[0] == 0) and (result[1] == 1) and (result[2] == 1) and (result[3] == 1) and (
+            result[4] == 1):  # 第2,3,4,5根手指伸直
+        gesture = "four"
+        print("four")
+        cmdline = 'espeak ' + "four"  # 控制音箱发出声音
+    elif (result[0] == 1) and (result[1] == 1) and (result[2] == 1) and (result[3] == 1) and (
+            result[4] == 1):  # 第1,2,3,4,5根手指伸直
+        gesture = "five"
+        print("five")
+        cmdline = 'espeak ' + "five"  # 控制音箱发出声音
+    elif (result[0] == 1) and (result[1] == 0) and (result[2] == 0) and (result[3] == 0) and (
+            result[4] == 1):  # 第1,5根手指伸直
+        gesture = "six"
+        print("six")
+        cmdline = 'espeak ' + "six"  # 控制音箱发出声音
+    else:  # 其他情况
+        gesture = "reposition"
+        print("reposition")
+        cmdline = 'espeak ' + "reposition"  # 控制音箱发出声音
+
+    os.system(cmdline)  # 控制音箱发出声音
+
+    return gesture
+
+
+# -----------5.定义超声波避障所需的函数--------------------------
+# 初始化超声波模块
+def steup_ultrasonic(trig, echo):
+    GPIO.setup(trig, GPIO.OUT, initial=GPIO.LOW)
+    GPIO.setup(echo, GPIO.IN)
+
+
+# 初始化蜂鸣器模块
+def setup_buzzer():
+    GPIO.setup(BUZZER, GPIO.OUT)
+    GPIO.output(BUZZER, GPIO.LOW)
+
+
+# 控制蜂鸣器发声
+def loop(i):
+    t = 1.0 / i  # 设置发声间隔
+
+    # 发声
+    for j in range(i):
+        GPIO.output(BUZZER, GPIO.HIGH)
+        time.sleep(t)
+        GPIO.output(BUZZER, GPIO.LOW)
+        time.sleep(t)
+
+
+# 计算距离
+def find_distance(trig, echo, n):
+    dis[n] = 200
+
+    while True:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.output(trig, GPIO.HIGH)
+        time.sleep(0.00001)  # 延时1us
+        GPIO.output(trig, GPIO.LOW)
+
+        # 获得发出超声波时间
+        while not GPIO.input(echo):
+            pass
+        t1 = time.time()
+
+        # 获得接收超声波时间
+        while GPIO.input(echo):
+            pass
+        t2 = time.time()
+
+        # 得到距离大小
+        dis[n] = round((t2 - t1) * 340 / 2, 5) * 100
+
+        time.sleep(1)
+
+
+# -----------6.定义巡线主函数--------------------------
+# 巡线函数
+def line_patrol():
+    TrackBar_Init()
+    set_cloud_platform_degree_1(90, 90)  # 初始化底部和顶部舵机角度为90°
+    set_cloud_platform_degree_1(90, 90)
+    set_cloud_platform_degree_1(90, 90)
+    set_cloud_platform_degree_2(90, 90)  # 初始化底部和顶部舵机角度为90°
+    set_cloud_platform_degree_2(90, 90)
+    set_cloud_platform_degree_2(90, 90)
+
+    # 初始化按钮的GPIO口
+    GPIO.setmode(GPIO.BCM)  # 设置BCM编码
+    button1 = 16  # BCM第18引脚
+    GPIO.setup(button1, GPIO.IN, GPIO.PUD_UP)
+
+    while usb_cap1.isOpened():  # 当USB摄像头打开时
+        Image_Processing()
+        Find_Line()
+        if flag == 1:
+            Follow_Line()
+
+        if (GPIO.input(button1) == 1):
+            set_cloud_platform_degree_1(90, 90)  # 初始化底部和顶部舵机角度为90°
+            set_cloud_platform_degree_1(90, 90)
+            set_cloud_platform_degree_1(90, 90)
+            set_cloud_platform_degree_2(90, 90)  # 初始化底部和顶部舵机角度为90°
+            set_cloud_platform_degree_2(90, 90)
+            set_cloud_platform_degree_2(90, 90)
+            # 关闭所有的窗口
+            cv2.destroyAllWindows()
+            print("stop line patrol")
+            cmdline = 'espeak ' + "stop line patrol"
+            os.system(cmdline)
+            break
+
+
+# -----------7.定义手势识别与追踪主函数--------------------------
+# 手势识别与追踪函数
+def hand_gesture_and_track():
+    set_cloud_platform_degree_1(90, 150)  # 舵机角度初始化
+    set_cloud_platform_degree_1(90, 150)
+    set_cloud_platform_degree_1(90, 150)
+
+    # 初始化按钮的GPIO口
+    GPIO.setmode(GPIO.BCM)  # 设置BCM编码
+    button2 = 20
+    GPIO.setup(button2, GPIO.IN, GPIO.PUD_UP)
+
+    while usb_cap2.isOpened():  # 当USB摄像头打开时
+        ret, frame = usb_cap2.read()  # 获取ret:是否读取到图片，frame:截取到一帧的图片
+        frame = cv2.flip(frame, 1)  # 画面左右翻转
+
+        frame_RGB = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # 将图像从BGR格式转换为RGB格式
+        result = hands.process(frame_RGB)
+
+        if ret:
+            if result.multi_hand_landmarks:  # 如果被检测跟踪的手的集合不为空，即检测到手
+
+                # 手势识别
+                for i, handLms in enumerate(result.multi_hand_landmarks):  # 对于每一只手
+                    # 绘制手部坐标及连线图
+                    mpDraw.draw_landmarks(frame,  # 绘制对象
+                                          handLms,  # 传入landmarks的点
+                                          mpHands.HAND_CONNECTIONS,  # 绘制手部坐标点之间的连线
+                                          landmark_drawing_spec=handLmsStyle,  # 已设置好的点的粗度及颜色
+                                          connection_drawing_spec=handConStyle  # 已设置好的线的粗度及颜色
+                                          )
+
+                    for j, lm in enumerate(handLms.landmark):  # 列举每个坐标点
+                        xPos = int(lm.x * frame_width)  # 获取坐标点的x坐标
+                        yPos = int(lm.y * frame_height)  # 获取坐标点的y坐标
+                        landmark_ = [xPos, yPos]
+                        landmark[j, :] = landmark_  # landmark中保存坐标点对应的x，y坐标
+
+                    # 判断每根手指是否伸直，并将结果记录子figure数组中
+                    for k in range(5):
+                        if k == 0:  # 当检测对象为大拇指时
+                            figure_ = finger_stretch_detect(landmark[17], landmark[4 * k + 2],
+                                                            landmark[4 * k + 4])  # 以坐标点17为参照点
+                        else:  # 当检测对象为其他四指时
+                            figure_ = finger_stretch_detect(landmark[0], landmark[4 * k + 2],
+                                                            landmark[4 * k + 4])  # 以坐标点0为参照点
+
+                        figure[k] = figure_  # 将判断结果记录在figure数组中
+
+                gesture_result = detect_hands_gesture(figure)  # 获取检测到的手势信息
+                cv2.putText(frame, f"{gesture_result}", (30, 60 * (i + 1)),
+                            cv2.FONT_HERSHEY_COMPLEX, 2, (255, 255, 0), 5)  # 将手势信息展示在图像上
+
+                # 手部追踪
+                for handLms in result.multi_hand_landmarks:  # 对于每一只手
+                    for i, lm in enumerate(handLms.landmark):  # 列举每个坐标点
+                        if i == 9:  # 对于第9个坐标点，即离手中心最近的坐标点
+                            xPos = int(lm.x * frame_height)  # 获取坐标点的x坐标
+                            yPos = int(lm.y * frame_height)  # 获取坐标点的y坐标
+
+                            # 放大该坐标点
+                            cv2.circle(frame, (xPos, yPos), 10,
+                                       (0, 0, 255), cv2.FILLED)
+
+                            # 计算x轴与y轴的偏移量
+                            (offset_x, offset_y) = calculate_offset(
+                                frame_width, frame_height, xPos, yPos)
+
+                            # 计算下一步舵机要转的角度
+                            next_btm_degree = btm_servo_control(offset_x)
+                            next_top_degree = top_servo_control(offset_y)
+
+                            # 舵机转动
+                            set_btm_servo_angle_1(next_btm_degree)
+                            set_btm_servo_angle_1(next_btm_degree)
+                            set_btm_servo_angle_1(next_btm_degree)
+                            set_top_servo_angle_1(next_top_degree)
+                            set_top_servo_angle_1(next_top_degree)
+                            set_top_servo_angle_1(next_top_degree)
+
+                            # 更新角度值
+                            last_btm_degree = next_btm_degree
+                            last_top_degree = next_top_degree
+
+        # 显示图像
+        cv2.imshow('hand_gesture_and_track', frame)
+        cv2.waitKey(1)
+
+        if (GPIO.input(button2) == 1):
+            set_cloud_platform_degree_1(90, 90)
+            set_cloud_platform_degree_1(90, 90)
+            set_cloud_platform_degree_1(90, 90)
+            # 关闭所有的窗口
+            cv2.destroyAllWindows()
+            print("stop hand gesture and track")
+            cmdline = 'espeak ' + "stop hand gesture and track"
+            os.system(cmdline)
+            break
+
+
+# -----------8.定义红绿灯识别主函数--------------------------
+# 红绿灯识别函数
+def traffic_light_detect():
+    count = 0
+    green_count = 0
+    orange_count = 0
+    red_count = 0
+    set_cloud_platform_degree_1(90, 150)  # 舵机角度初始化
+    set_cloud_platform_degree_1(90, 150)
+    set_cloud_platform_degree_1(90, 150)
+
+    # 初始化按钮的GPIO口
+    GPIO.setmode(GPIO.BCM)  # 设置BCM编码
+    button3 = 21
+    GPIO.setup(button3, GPIO.IN, GPIO.PUD_UP)
+
+    while usb_cap3.isOpened():  # 当USB摄像头打开时
+        time.sleep(0.2)
+        count += 1
+
+        ret, frame = usb_cap3.read()
+        frame = cv2.flip(frame, 1)  # 画面左右翻转
+
+        # 转换hsv颜色空间
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # 绿色
+        mask_green = cv2.inRange(hsv, lowerb=lower_hsv_green, upperb=upper_hsv_green)
+
+        # 中值滤波
+        green_blur = cv2.medianBlur(mask_green, 3)
+        # 自适应分割
+        dst = cv2.adaptiveThreshold(green_blur, 210, cv2.BORDER_REPLICATE, cv2.THRESH_BINARY_INV, 3, 10)
+        # 提取轮廓
+        contours, heridency = cv2.findContours(dst, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # 标记轮廓
+        cv2.drawContours(green_blur, contours, -1, (255, 0, 255), 3)
+
+        green_flag = 0
+
+        for index, contour in enumerate(contours):
+            if cv2.contourArea(contours[index]) < 100 or cv2.contourArea(contours[index]) > 1500:  # 面积约束
+                continue
+
+            perimeter = cv2.arcLength(contour, True)
+            area = cv2.contourArea(contour)
+            alpha = 4 * np.pi * area / (perimeter ** 2)
+
+            moments = cv2.moments(contour)
+            cx = int(moments['m10'] / moments['m00'])
+            cy = int(moments['m01'] / moments['m00'])
+
+            if alpha > round_thresh:
+                cv2.circle(green_blur, (cx, cy), 2, color=(0, 0, 255), thickness=2)
+                green_flag = 1
+
+        # 橙色
+        mask_orange = cv2.inRange(hsv, lowerb=lower_hsv_orange, upperb=upper_hsv_orange)
+
+        # 中值滤波
+        orange_blur = cv2.medianBlur(mask_orange, 3)
+        # 自适应分割
+        dst = cv2.adaptiveThreshold(orange_blur, 210, cv2.BORDER_REPLICATE, cv2.THRESH_BINARY_INV, 3, 10)
+        # 提取轮廓
+        contours, heridency = cv2.findContours(dst, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # 标记轮廓
+        cv2.drawContours(orange_blur, contours, -1, (255, 0, 255), 3)
+
+        orange_flag = 0
+
+        for index, contour in enumerate(contours):
+            if cv2.contourArea(contours[index]) < 100 or cv2.contourArea(contours[index]) > 1500:  # 面积约束
+                continue
+
+            perimeter = cv2.arcLength(contour, True)
+            area = cv2.contourArea(contour)
+            alpha = 4 * np.pi * area / (perimeter ** 2)
+
+            moments = cv2.moments(contour)
+            cx = int(moments['m10'] / moments['m00'])
+            cy = int(moments['m01'] / moments['m00'])
+
+            if alpha > round_thresh:
+                cv2.circle(orange_blur, (cx, cy), 2, color=(255, 165, 0), thickness=2)
+                orange_flag = 1
+
+        # 红色
+        mask_red_1 = cv2.inRange(hsv, lowerb=lower_hsv_red_1, upperb=upper_hsv_red_1)
+        mask_red_2 = cv2.inRange(hsv, lowerb=lower_hsv_red_2, upperb=upper_hsv_red_2)
+        mask_red = cv2.add(mask_red_1, mask_red_2)
+
+        # 中值滤波
+        red_blur = cv2.medianBlur(mask_red, 3)
+        # 自适应分割
+        dst = cv2.adaptiveThreshold(red_blur, 210, cv2.BORDER_REPLICATE, cv2.THRESH_BINARY_INV, 3, 10)
+        # 提取轮廓
+        contours, heridency = cv2.findContours(dst, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # 标记轮廓
+        cv2.drawContours(red_blur, contours, -1, (255, 0, 255), 3)
+
+        red_flag = 0
+
+        for index, contour in enumerate(contours):
+            if cv2.contourArea(contours[index]) < 100 or cv2.contourArea(contours[index]) > 1500:  # 面积约束
+                continue
+
+            perimeter = cv2.arcLength(contour, True)
+            area = cv2.contourArea(contour)
+            alpha = 4 * np.pi * area / (perimeter ** 2)
+
+            moments = cv2.moments(contour)
+            cx = int(moments['m10'] / moments['m00'])
+            cy = int(moments['m01'] / moments['m00'])
+
+            if alpha > round_thresh:
+                cv2.circle(red_blur, (cx, cy), 2, color=(0, 0, 255), thickness=2)
+                red_flag = 1
+
+        # 进行判断
+        if green_flag:
+            green_count += 1
+
+        elif orange_flag:
+            orange_count += 1
+
+        elif red_flag:
+            red_count += 1
+
+        if count % 10 == 0:
+            if green_count == 0 and orange_count == 0 and red_count == 0:
+                continue
+            flag_dict = {'green': green_count, 'orange': orange_count, 'red': red_count}
+            print(max(flag_dict, key=flag_dict.get))
+
+            # 控制音箱发出声音
+            if max(flag_dict, key=flag_dict.get) == 'green':
+                cmdline = 'espeak ' + "green"
+            elif max(flag_dict, key=flag_dict.get) == 'orange':
+                cmdline = 'espeak ' + "orange"
+            elif max(flag_dict, key=flag_dict.get) == 'red':
+                cmdline = 'espeak ' + "red"
+            os.system(cmdline)
+
+            green_count = 0
+            orange_count = 0
+            red_count = 0
+
+        cv2.imshow('frame', frame)
+        cv2.imshow('green_blur', green_blur)
+        cv2.imshow('orange_blur', orange_blur)
+        cv2.imshow('red_blur', red_blur)
+        cv2.waitKey(1)
+
+        if (GPIO.input(button3) == 1):
+            set_cloud_platform_degree_1(90, 90)
+            set_cloud_platform_degree_1(90, 90)
+            set_cloud_platform_degree_1(90, 90)
+            # 关闭所有的窗口
+            cv2.destroyAllWindows()
+            print("stop traffic light detect")
+            cmdline = 'espeak ' + "stop traffic light detect"
+            os.system(cmdline)
+            break
+
+
+# -----------9.定义巡线、手势识别与追踪、红绿灯识别三合一主函数--------------------------
+# 巡线、手势识别与追踪、红绿灯识别三合一函数
+def three_in_one():
+    while True:
+        # time.sleep(0.2)
+        # 初始化按钮的GPIO口
+        GPIO.setmode(GPIO.BCM)  # 设置BCM编码
+        button1 = 16
+        button2 = 20
+        button3 = 21
+        button4 = 12
+
+        GPIO.setup(button1, GPIO.IN, GPIO.PUD_UP)
+        GPIO.setup(button2, GPIO.IN, GPIO.PUD_UP)
+        GPIO.setup(button3, GPIO.IN, GPIO.PUD_UP)
+        GPIO.setup(button4, GPIO.IN, GPIO.PUD_UP)
+
+        if (GPIO.input(button1) == 1):  # 按下按钮1
+            print("begin line patrol")
+            line_patrol()
+
+        elif (GPIO.input(button2) == 1):  # 按下按钮2
+            print("begin hand gesture and track")
+            hand_gesture_and_track()
+
+        elif (GPIO.input(button3) == 1):  # 按下按钮3
+            print("begin traffic light detect")
+            traffic_light_detect()
+
+        elif (GPIO.input(button4) == 1):  # 按下按钮4
+            print("three in one over")
+            break
+
+
+# -----------10.定义避障主函数--------------------------
+# 避障函数
+def obstacle_avoidance():
+    # 初始化按钮
+    GPIO.setmode(GPIO.BCM)  # 设置BCM编码
+    button4 = 12
+    GPIO.setup(button4, GPIO.IN, GPIO.PUD_UP)
+
+    # 初始化蜂鸣器和超声波模块
+    GPIO.setmode(GPIO.BCM)
+    steup_ultrasonic(TRIG_1, ECHO_1)
+    steup_ultrasonic(TRIG_2, ECHO_2)
+    steup_ultrasonic(TRIG_3, ECHO_3)
+    setup_buzzer()
+    # time.sleep(2)
+
+    while True:
+        if dis[0] < 100 or dis[1] < 100 or dis[2] < 100:  # 当有一个距离小于1m时
+            if dis[0] < 50 or dis[1] < 50 or dis[2] < 50:  # 当有一个距离小于50cm时
+                if dis[0] < 25 or dis[1] < 25 or dis[2] < 25:  # 当有一个距离小于25cm时
+                    loop(8)
+                    print("WARNING!!! ", dis[0], "&&", dis[1], "&&", dis[2])
+                else:
+                    loop(4)
+                    print("WARNING ", dis[0], "&&", dis[1], "&&", dis[2])
+            else:
+                loop(2)
+                print("warning ", dis[0], "&&", dis[1], "&&", dis[2])
+        else:
+            pass
+        time.sleep(1)
+
+        if (GPIO.input(button4) == 1):  # 按下按钮4
+            print("obstacle avoidance over")
+            set_cloud_platform_degree_1(90, 90)  # 舵机角度初始化
+            set_cloud_platform_degree_1(90, 90)
+            set_cloud_platform_degree_1(90, 90)
+            set_cloud_platform_degree_2(90, 90)  # 舵机角度初始化
+            set_cloud_platform_degree_2(90, 90)
+            set_cloud_platform_degree_2(90, 90)
+
+            # 释放摄像头
+            usb_cap1.release()
+            usb_cap2.release()
+            usb_cap3.release()
+
+            # 释放GPIO口
+            GPIO.cleanup()
+
+            # 关闭所有的窗口
+            cv2.destroyAllWindows()
+            break
+
+
+# 主函数
+if __name__ == '__main__':
+    # -----------11.定义巡线参数--------------------------
+    # 初始化按钮的GPIO口
+    GPIO.setmode(GPIO.BCM)  # 设置BCM编码
+    button2 = 20
+    GPIO.setup(button2, GPIO.IN, GPIO.PUD_UP)
+
+    # 初始化导盲杖舵机的GPIO口
+    servopin11 = 23  # 底部舵机（方向为左右转）的引脚1对应BCM编码
+    servopin12 = 18  # 顶部舵机（方向为上下转）的引脚2对应BCM编码
+
+    GPIO.setup(servopin11, GPIO.OUT, initial=False)  # 设置引脚1状态及初始类型
+    GPIO.setup(servopin12, GPIO.OUT, initial=False)  # 设置引脚2状态及初始类型
+
+    p11 = GPIO.PWM(servopin11, 50)  # 设置引脚1频率为50kHZ
+    p12 = GPIO.PWM(servopin12, 50)  # 设置引脚2频率为50kHZ
+
+    # 初始化眼镜舵机的GPIO口
+    servopin21 = 17  # 底部舵机（方向为左右转）的引脚1对应BCM编码
+    servopin22 = 27  # 顶部舵机（方向为上下转）的引脚2对应BCM编码
+
+    GPIO.setup(servopin21, GPIO.OUT, initial=False)  # 设置引脚1状态及初始类型
+    GPIO.setup(servopin22, GPIO.OUT, initial=False)  # 设置引脚2状态及初始类型
+
+    p21 = GPIO.PWM(servopin21, 50)  # 设置引脚1频率为50kHZ
+    p22 = GPIO.PWM(servopin22, 50)  # 设置引脚2频率为50kHZ
+
+    set_cloud_platform_degree_1(90, 90)  # 初始化底部和顶部舵机角度为90°
+    set_cloud_platform_degree_1(90, 90)
+    set_cloud_platform_degree_1(90, 90)
+    set_cloud_platform_degree_2(90, 90)  # 初始化底部和顶部舵机角度为90°
+    set_cloud_platform_degree_2(90, 90)
+    set_cloud_platform_degree_2(90, 90)
+
+    # 初始化巡线所需参数
+    # 初始化摄像头
+    # usb_cap1 = cv2.VideoCapture(-1)  # 调用摄像头并设置阙值
+    # # 将显示的分辨率设置为320×240 px
+    # usb_cap1.set(3, 320)
+    # usb_cap1.set(4, 240)
+    usb_cap1 = cv2.VideoCapture(
+        '/home/pi/Desktop/MyOpencv/images/blindroad2.mp4')
+    print('USB摄像头1是否开启： {}'.format(usb_cap1.isOpened()))  # 判断摄像头是否开启
+    width = int(usb_cap1.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(usb_cap1.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    frame_width = 320
+    frame_height = 240
+    flag = 0
+    turn_flag = 0
+
+    # -----------12.定义手势识别与追踪参数--------------------------
+    btm_kp = 30  # 设置底部舵机的偏移速度系数
+    top_kp = 30  # 设置顶部舵机的偏移速度系数
+
+    offset_dead_block = 0.01  # 设置偏移量的死区大小
+
+    last_btm_degree = 90
+    last_top_degree = 90
+    # 初始化摄像头
+    usb_cap2 = cv2.VideoCapture(-1)
+    print('USB摄像头2是否开启： {}'.format(usb_cap2.isOpened()))  # 判断摄像头是否开启
+
+    # 将显示的分辨率设置为320×240 px
+    usb_cap2.set(3, 320)
+    usb_cap2.set(4, 240)
+
+    # 设置手部检测和跟踪的HSV值
+    hand_color_lower = np.array([0, 30, 60])  # 设置手部追踪的HSV值上限
+    hand_color_upper = np.array([255, 255, 255])  # 设置手部追踪的HSV值上限
+
+    # 手部检测函数
+    mpHands = mp.solutions.hands
+    hands = mpHands.Hands()  # 手部检测和跟踪使用的google模型
+
+    # 绘制关键点和连接线函数
+    mpDraw = mp.solutions.drawing_utils
+    handLmsStyle = mpDraw.DrawingSpec(
+        color=(0, 0, 255), thickness=5)  # 设置点的粗度及颜色
+    handConStyle = mpDraw.DrawingSpec(
+        color=(0, 255, 0), thickness=5)  # 设置线的粗度及颜色
+
+    kernel = np.ones((2, 2), np.uint8)  # 设置卷积核大小为2 * 2
+    figure = np.zeros(5)  # 初始化figure为长度为5的零数组
+    landmark = np.empty((21, 2))  # 初始化landmark为形状为21*2的空数组（手部共21个坐标点）
+
+    # -----------13.定义红绿灯识别参数--------------------------
+    usb_cap3 = cv2.VideoCapture(
+        '/home/pi/Desktop/MyOpencv/images/traffic3.mp4')
+    print('USB摄像头3是否开启： {}'.format(usb_cap3.isOpened()))  # 判断摄像头是否开启
+
+    # 圆形检测阈值
+    round_thresh = 0.8
+
+    # 绿色
+    lower_hsv_green = np.array([49, 79, 137])
+    upper_hsv_green = np.array([90, 255, 255])
+
+    # 橙色
+    lower_hsv_orange = np.array([11, 100, 100])
+    upper_hsv_orange = np.array([25, 255, 255])
+
+    # 红色
+    lower_hsv_red_1 = np.array([0, 100, 100])
+    upper_hsv_red_1 = np.array([10, 255, 255])
+    lower_hsv_red_2 = np.array([160, 100, 100])
+    upper_hsv_red_2 = np.array([180, 255, 255])
+
+    # -----------14.定义超声波避障参数--------------------------
+    # 初始化超声波模块和蜂鸣器模块参数
+    TRIG_1 = 18
+    ECHO_1 = 23
+    TRIG_2 = 24
+    ECHO_2 = 25
+    TRIG_3 = 12
+    ECHO_3 = 16
+    BUZZER = 17
+
+    # 初始化3个蜂鸣器的距离
+    dis = [200, 200, 200]
+
+    # -----------15.定义多线程--------------------------
+    thread_1 = threading.Thread(target=three_in_one)
+    thread_2 = threading.Thread(target=find_distance, args=(TRIG_1, ECHO_1, 0), daemon=True)
+    thread_3 = threading.Thread(target=find_distance, args=(TRIG_2, ECHO_2, 1), daemon=True)
+    thread_4 = threading.Thread(target=find_distance, args=(TRIG_3, ECHO_3, 2), daemon=True)
+
+    thread_1.start()
+    thread_2.start()
+    thread_3.start()
+    thread_4.start()
